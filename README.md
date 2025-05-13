@@ -2,7 +2,7 @@
 
 ## Install
 ```bash
-conda create -f env/environment.yml
+conda env create -f env/environment.yml
 conda activate wan-inpaint
 ```
 
