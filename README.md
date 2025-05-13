@@ -8,10 +8,10 @@ conda activate wan-inpaint
 
 ## Run
 
-### T2V
+### SDEdit
 ```bash
 export HF_HUB_CACHE=/ist-nas/ist-share/vision/huggingface_hub/
-python example/example_t2v_1.3b.py
+python sdedit.py
 ```
 
 ## Create masked video
