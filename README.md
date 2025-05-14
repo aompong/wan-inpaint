@@ -11,6 +11,7 @@ conda activate wan-inpaint
 ### SDEdit
 ```bash
 export HF_HUB_CACHE=/ist-nas/ist-share/vision/huggingface_hub/
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
 python sdedit.py
 ```
 

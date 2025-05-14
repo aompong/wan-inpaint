@@ -57,7 +57,7 @@ for video in "$input_dir"/*.{mp4,mov,avi,mkv}; do
 
     [ -n "$max_frames" ] && cmd+=" -frames:v $max_frames"
 
-    cmd+=" -c:a copy '$output'"
+    cmd+=" -c:v libx264 -crf 18 -preset slow -c:a copy '$output'"
     echo "Processing: $video → $output"
     eval "$cmd"
 done
