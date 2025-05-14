@@ -175,7 +175,7 @@ def sdedit_video_inpainting_pipeline(
 
 @contextmanager
 def track_memory_usage():
-    peak_memory = {"cpu": 0, "gpu": 0}
+    peak_memory = {"cpu_gb": 0, "gpu_gb": 0}
 
     torch.cuda.reset_peak_memory_stats()
     start_gpu_mem = torch.cuda.memory_allocated()
