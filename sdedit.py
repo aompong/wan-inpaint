@@ -10,6 +10,12 @@ from transformers import AutoTokenizer
 from accelerate import cpu_offload
 from tqdm import tqdm
 from utils import seed_everything
+from dataclasses import dataclass, asdict
+import yaml
+from contextlib import contextmanager
+import psutil
+from dataclasses import field
+from typing import Dict
 
 seed_everything(0)
 
@@ -24,7 +30,8 @@ tokenizer = None
 text_encoder = None
 transformer = None
 
-vae = AutoencoderKLWan.from_pretrained(MODEL_ID, subfolder="vae", torch_dtype=torch.float32, local_files_only=True)
+start_loading = time.time()
+vae = AutoencoderKLWan.from_pretrained(MODEL_ID, subfolder="vae", torch_dtype=DTYPE, local_files_only=True)
 vae_scale_factor_temporal = 2 ** sum(vae.temperal_downsample) # 4
 vae_scale_factor_spatial = 2 ** len(vae.temperal_downsample) # 8
 scheduler = UniPCMultistepScheduler.from_pretrained(MODEL_ID, subfolder="scheduler", local_files_only=True)
@@ -39,7 +46,7 @@ for m in models:
 
 video_processor = VideoProcessor(vae_scale_factor=vae_scale_factor_spatial)
 mask_processor = VideoProcessor(vae_scale_factor=vae_scale_factor_spatial, do_binarize=True, do_normalize=False, do_convert_grayscale=True)
-
+load_time = time.time() - start_loading
 
 @torch.no_grad()
 def sdedit_video_inpainting_pipeline(
@@ -52,7 +59,8 @@ def sdedit_video_inpainting_pipeline(
     strength,
     num_inference_steps,
     guidance_scale,
-    dir='output/',
+    dir,
+    debug,
 ):
     # 1. timesteps
     scheduler.set_timesteps(num_inference_steps, DEVICE)
@@ -65,7 +73,7 @@ def sdedit_video_inpainting_pipeline(
     latent_timestep = timesteps[:1] # shape: [1]
 
     # 2. video latents
-    video_tensor = video_processor.preprocess_video(input_video_frames, height, width).to(DEVICE, dtype=torch.float32) # [B, C, F, H, W], range [0, 1]
+    video_tensor = video_processor.preprocess_video(input_video_frames, height, width).to(DEVICE, DTYPE) # [B, C, F, H, W], range [0, 1]
 
     num_channels_latents = transformer.config.in_channels # 16
     shape = (
@@ -86,7 +94,7 @@ def sdedit_video_inpainting_pipeline(
     latents = scheduler.add_noise(init_latents, noise, latent_timestep)
 
     # 3. mask latents
-    mask_tensor = mask_processor.preprocess_video(input_mask_frames, height, width).to(DEVICE) # [B, 1, F, H, W], (0, 1)
+    mask_tensor = mask_processor.preprocess_video(input_mask_frames, height, width).to(DEVICE, DTYPE) # [B, 1, F, H, W], (0, 1)
     
     mask = torch.nn.functional.interpolate(
         mask_tensor, 
@@ -122,6 +130,7 @@ def sdedit_video_inpainting_pipeline(
     negative_prompt_embeds.to(DTYPE)
 
     # 5. denoising (reverse sde)
+    if debug: torch.save(latents, f'{dir}/latents_before_denoising.pt')
     progress_bar = tqdm(timesteps, total=num_inference_steps)
     for i, t in enumerate(progress_bar):
         latent_model_input = latents.to(DTYPE)
@@ -151,6 +160,7 @@ def sdedit_video_inpainting_pipeline(
             noise_timestep = timesteps[i+1]
             init_latents_proper = scheduler.add_noise(init_latents_proper, noise, torch.tensor([noise_timestep]))
         latents = (1-init_mask) * init_latents_proper + init_mask * latents
+    if debug: torch.save(latents, f'{dir}/latents_after_denoising.pt')
 
     # 6. Decode
     latents = latents.to(vae.dtype)
@@ -158,38 +168,69 @@ def sdedit_video_inpainting_pipeline(
     latents_std = 1.0 / torch.tensor(vae.config.latents_std).view(1, vae.config.z_dim, 1, 1, 1).to(latents.device, latents.dtype)
     latents = latents/latents_std + latents_mean
 
+    if debug: torch.save(latents, f'{dir}/latents_before_decode.pt')
     output = vae.decode(latents, return_dict=False)[0] # [1, 3, F, H, W]
     output = video_processor.postprocess_video(output) # (F, 3, H, W)
     return output
 
+@contextmanager
+def track_memory_usage():
+    peak_memory = {"cpu_gb": 0, "gpu_gb": 0}
+
+    torch.cuda.reset_peak_memory_stats()
+    start_gpu_mem = torch.cuda.memory_allocated()
+    process = psutil.Process()
+    start_cpu_mem = process.memory_info().rss # still not representing real ram used
+
+    try:
+        yield peak_memory
+    finally:
+        peak_memory["cpu_gb"] = round((process.memory_info().rss - start_cpu_mem) / (1024 ** 3), 2)
+        peak_memory["gpu_gb"] = round((torch.cuda.max_memory_allocated() - start_gpu_mem) / (1024 ** 3), 2)
+
+@dataclass
+class Config:
+    dir: str = f'output/sdedit/{time.strftime("%m%d")}/{time.strftime("%H%M")}'
+    input_video: str = "input/landmark/process/16fps_720x1280_crop_41/man_video.mp4"
+    height: int = 1280
+    width: int = 720
+    strength: float = 0.7
+    num_inference_steps: int = 10
+    guidance_scale: float = 7.0
+    prompt: str = "A man is speaking straight to the camera. He is bald, has beard, and is wearing a white shirt. His mouth opens and closes, naturally revealing his teeth as he gives his speech. He is eloquently pronouncing each word, moving his head and changing his facial expression as he talks."
+    neg_prompt: str = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+    fps: int = 16
+
+    timing_stats: Dict[str, float] = field(default_factory=dict)
+    memory_stats: Dict[str, float] = field(default_factory=dict)
+
+    @property
+    def pipeline_kwargs(self):
+        return {k: v for k, v in asdict(self).items() if k in ['dir', 'height', 'width', 'strength', 'num_inference_steps', 'guidance_scale', 'prompt', 'neg_prompt']}
+
 def main():
-    dir = f'output/sdedit/{time.strftime("%m%d")}/{time.strftime("%H%M")}'
-    os.makedirs(dir, exist_ok=True)
+    config = Config()
+    os.makedirs(config.dir, exist_ok=True)
+    config_file = f'{config.dir}/config.yml'
+    with open(config_file, "w") as f:
+        yaml.safe_dump(asdict(config), f)
 
-    path = "input/landmark/process/16fps_720x1280_crop_41/man_video.mp4"
-    input_video_frames = load_video(path) 
-    input_mask_frames = load_video(path.replace('video', 'mask'))
+    start_inference = time.time()
+    with track_memory_usage() as peak_memory:
+        inpainted_video = sdedit_video_inpainting_pipeline(
+            input_video_frames=load_video(config.input_video),
+            input_mask_frames=load_video(config.input_video.replace('video', 'mask')),
+            debug=False,
+            **config.pipeline_kwargs,
+        )[0]
+    infer_time = time.time() - start_inference
 
-    height=1280
-    width=720
-    strength = 0.7
-    num_inference_steps = 10
-    guidance_scale = 7.0
-    prompt = "A man is speaking straight to the camera. He is bald, has beard, and is wearing a white shirt. His mouth opens and closes, naturally revealing his teeth as he gives his speech. He is eloquently pronouncing each word, moving his head and changing his facial expression as he talks."
-    neg_prompt = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
-    inpainted_video = sdedit_video_inpainting_pipeline(
-        input_video_frames,
-        input_mask_frames,
-        height=height,
-        width=width,
-        prompt=prompt,
-        neg_prompt=neg_prompt, 
-        strength=strength,
-        num_inference_steps=num_inference_steps,
-        guidance_scale=guidance_scale,
-        dir=dir,
-    )[0]
-    export_to_video(inpainted_video, f'{dir}/out_{height}x{width}_str{strength}_infstp{num_inference_steps}_gs{guidance_scale}.mp4', fps=16)
+    config.timing_stats.update({"load_seconds": round(load_time, 3), "infer_seconds": round(infer_time, 3)})
+    config.memory_stats.update(peak_memory)
+    with open(config_file, "w") as f:
+        yaml.safe_dump(asdict(config), f)
+
+    export_to_video(inpainted_video, f'{config.dir}/out_py.mp4', fps=config.fps)
 
 if __name__ == "__main__":
     main()
