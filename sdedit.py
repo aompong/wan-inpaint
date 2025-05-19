@@ -175,18 +175,16 @@ def sdedit_video_inpainting_pipeline(
 
 @contextmanager
 def track_memory_usage():
-    peak_memory = {"cpu_gb": 0, "gpu_gb": 0}
-
+    peak_memory = {}
     torch.cuda.reset_peak_memory_stats()
-    start_gpu_mem = torch.cuda.memory_allocated()
-    process = psutil.Process()
-    start_cpu_mem = process.memory_info().rss # still not representing real ram used
+    start_gpu = torch.cuda.memory_allocated()
+    start_cpu = psutil.Process(os.getpid()).memory_info().rss # still not representing real ram used
 
     try:
         yield peak_memory
     finally:
-        peak_memory["cpu_gb"] = round((process.memory_info().rss - start_cpu_mem) / (1024 ** 3), 2)
-        peak_memory["gpu_gb"] = round((torch.cuda.max_memory_allocated() - start_gpu_mem) / (1024 ** 3), 2)
+        peak_memory["cpu_gb"] = round((psutil.Process(os.getpid()).memory_info().rss - start_cpu) / (1024**3), 2)
+        peak_memory["gpu_gb"] = round((torch.cuda.max_memory_allocated() - start_gpu) / (1024**3), 2)
 
 @dataclass
 class Config:
@@ -213,7 +211,7 @@ def main():
     os.makedirs(config.dir, exist_ok=True)
     config_file = f'{config.dir}/config.yml'
     with open(config_file, "w") as f:
-        yaml.safe_dump(asdict(config), f)
+        yaml.safe_dump(asdict(config), f, sort_keys=False)
 
     start_inference = time.time()
     with track_memory_usage() as peak_memory:
@@ -225,12 +223,12 @@ def main():
         )[0]
     infer_time = time.time() - start_inference
 
-    config.timing_stats.update({"load_seconds": round(load_time, 3), "infer_seconds": round(infer_time, 3)})
+    config.timing_stats.update({"load_seconds": round(load_time, 2), "infer_seconds": round(infer_time, 2)})
     config.memory_stats.update(peak_memory)
     with open(config_file, "w") as f:
-        yaml.safe_dump(asdict(config), f)
+        yaml.safe_dump(asdict(config), f, sort_keys=False)
 
-    export_to_video(inpainted_video, f'{config.dir}/out_py.mp4', fps=config.fps)
+    export_to_video(inpainted_video, f'{config.dir}/out_py.mp4', fps=config.fps, quality=10)
 
 if __name__ == "__main__":
     main()

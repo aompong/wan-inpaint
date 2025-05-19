@@ -24,10 +24,11 @@ filter=""
 map_inputs=""
 for ((i=0; i<${#videos[@]}; i++)); do
     inputs+=("-i" "${videos[$i]}")
-    filter+="[${i}:v]"
-    map_inputs+="[${i}:v]"
+    filename=$(basename "${videos[$i]}" .mp4)  # Extract filename without extension
+    filter+="[${i}:v]drawtext=text='${filename}':fontsize=24:fontcolor=white:x=10:y=10[v${i}];"
+    map_inputs+="[v${i}]"
 done
-filter+="hstack=inputs=${#videos[@]}[v]"
+filter+="${map_inputs}hstack=inputs=${#videos[@]}[v]"
 
 
 ffmpeg "${inputs[@]}" -filter_complex "$filter" -map "[v]" "$output"
