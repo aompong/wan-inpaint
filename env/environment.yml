@@ -1,0 +1,12 @@
+name: wan-inpaint
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11.6
+  - cudatoolkit=11.8
+  - opencv # https://github.com/qqwweee/keras-yolo3/issues/269#issuecomment-1286506510
+  - pip
+  - pip:
+    - git+https://github.com/huggingface/diffusers # install from source for unreleased change in `main` e.g. https://github.com/huggingface/diffusers/pull/11414
+    - -r requirements.txt
